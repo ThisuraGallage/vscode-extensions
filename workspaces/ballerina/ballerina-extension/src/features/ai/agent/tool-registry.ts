@@ -47,6 +47,7 @@ import { createBallerinaRunTool, BALLERINA_RUN_TOOL_NAME } from './tools/balleri
 import { createBallerinaGetLogsTool, BALLERINA_GET_LOGS_TOOL_NAME } from './tools/ballerina-get-logs';
 import { createBallerinaStopTool, BALLERINA_STOP_TOOL_NAME } from './tools/ballerina-stop';
 import { RunningServicesManager } from './tools/running-service-manager';
+// import { createTokenProxyTool, TOKEN_PROXY_TOOL } from './tools/token-proxy';
 
 export interface ToolRegistryOptions {
     eventHandler: CopilotEventHandler;
@@ -113,5 +114,6 @@ export function createToolRegistry(opts: ToolRegistryOptions) {
         [BALLERINA_RUN_TOOL_NAME]: createBallerinaRunTool(tempProjectPath, opts.runningServices, eventHandler),
         [BALLERINA_GET_LOGS_TOOL_NAME]: createBallerinaGetLogsTool(opts.runningServices, eventHandler),
         [BALLERINA_STOP_TOOL_NAME]: createBallerinaStopTool(opts.runningServices, eventHandler),
+        // [TOKEN_PROXY_TOOL]: createTokenProxyTool(eventHandler, tempProjectPath, modifiedFiles),
     };
 }

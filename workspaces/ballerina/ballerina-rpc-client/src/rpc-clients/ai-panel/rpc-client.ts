@@ -29,6 +29,8 @@ import {
     ConnectorSpecRequest,
     ConfigurationCancelRequest,
     ConfigurationProvideRequest,
+    TriggerOAuthAutoConfigRequest,
+    TriggerOAuthAutoConfigResponse,
     DocGenerationRequest,
     GenerateAgentCodeRequest,
     GenerateOpenAPIRequest,
@@ -88,6 +90,7 @@ import {
     promptGithubAuthorize,
     provideConnectorSpec,
     provideConfiguration,
+    triggerOAuthAutoConfig,
     restoreCheckpoint,
     showSignInAlert,
     submitFeedback,
@@ -288,5 +291,9 @@ export class AiPanelRpcClient implements AIPanelAPI {
 
     getUsage(): Promise<UsageResponse | undefined> {
         return this._messenger.sendRequest(getUsage, HOST_EXTENSION);
+    }
+
+    triggerOAuthAutoConfig(params: TriggerOAuthAutoConfigRequest): Promise<TriggerOAuthAutoConfigResponse> {
+        return this._messenger.sendRequest(triggerOAuthAutoConfig, HOST_EXTENSION, params);
     }
 }

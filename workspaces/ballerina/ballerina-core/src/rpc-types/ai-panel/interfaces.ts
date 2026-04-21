@@ -447,6 +447,20 @@ export interface ConfigurationCancelRequest {
     comment?: string;
 }
 
+export interface TriggerOAuthAutoConfigRequest {
+    vendor: string;
+}
+
+export interface TriggerOAuthAutoConfigResponse {
+    success: boolean;
+    credentials?: {
+        clientId: string;
+        clientSecret: string;
+        refreshToken: string;
+    };
+    error?: string;
+}
+
 export type ErrorCode = {
     code: number;
     message: string;

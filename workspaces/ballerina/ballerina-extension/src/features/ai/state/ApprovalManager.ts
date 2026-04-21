@@ -16,7 +16,7 @@
  * under the License.
  */
 
-import { Task, MACHINE_VIEW } from "@wso2/ballerina-core/lib/state-machine-types";
+import { Task, MACHINE_VIEW, OAuthGroupMetadata } from "@wso2/ballerina-core/lib/state-machine-types";
 import { CopilotEventHandler } from "../utils/events";
 import { ConfigVariable } from "../../../utils/toml-utils";
 import { StateMachine } from "../../../stateMachine";
@@ -321,9 +321,10 @@ export class ApprovalManager {
         existingValues: Record<string, string>,
         eventHandler: CopilotEventHandler,
         isTestConfig?: boolean,
-        message?: string
+        message?: string,
+        oauthGroups?: OAuthGroupMetadata[]
     ): Promise<ConfigurationResponse> {
-        console.log(`[ApprovalManager] Requesting ${isTestConfig ? 'test ' : ''}configuration: ${requestId}`);
+        console.log(`[ApprovalManager] Requesting ${isTestConfig ? 'test ' : ''}configuration: ${requestId}${oauthGroups?.length ? ` (OAuth vendors: ${oauthGroups.map(g => g.vendor).join(', ')})` : ''}`);
 
         // Use provided message or generate default
         const displayMessage = message || `Please provide ${variables.length} configuration value(s)`;
@@ -355,6 +356,7 @@ export class ApprovalManager {
                         existingValues,
                         message: displayMessage,
                         isTestConfig,
+                        oauthGroups,
                     },
                 },
             }

@@ -27,6 +27,8 @@ import {
     FileOrDirRequest,
     FileOrDirResponse,
     GoToSourceRequest,
+    OAuthAutoConfigRequest,
+    OAuthAutoConfigResponse,
     OpenExternalUrlRequest,
     PackageTomlValues,
     PublishToCentralResponse,
@@ -52,6 +54,7 @@ import {
     goToSource,
     hasCentralPATConfigured,
     isNPSupported,
+    oauthAutoConfig,
     openExternalUrl,
     publishToCentral,
     runBackgroundTerminalCommand,
@@ -172,5 +175,9 @@ export class CommonRpcClient implements CommonRPCAPI {
 
     hasCentralPATConfigured(): Promise<boolean> {
         return this._messenger.sendRequest(hasCentralPATConfigured, HOST_EXTENSION);
+    }
+
+    oauthAutoConfig(params: OAuthAutoConfigRequest): Promise<OAuthAutoConfigResponse> {
+        return this._messenger.sendRequest(oauthAutoConfig, HOST_EXTENSION, params);
     }
 }

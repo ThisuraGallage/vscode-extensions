@@ -22,6 +22,23 @@ import { handleOpenFile, handleOpenRepo } from ".";
 import { CMP_OPEN_VSCODE_URL, TM_EVENT_OPEN_FILE_URL_START, TM_EVENT_OPEN_REPO_URL_START, sendTelemetryEvent } from "../features/telemetry";
 import { IOpenCompSrcCmdParams, CommandIds as PlatformExtCommandIds } from "@wso2/wso2-platform-core";
 
+let pendingOAuthResolve: ((code: string) => void) | null = null;
+
+export function waitForOAuthCallback(timeoutMs: number): Promise<string | null> {
+    return new Promise((resolve) => {
+        const timer = setTimeout(() => {
+            pendingOAuthResolve = null;
+            resolve(null);
+        }, timeoutMs);
+
+        pendingOAuthResolve = (code: string) => {
+            clearTimeout(timer);
+            pendingOAuthResolve = null;
+            resolve(code);
+        };
+    });
+}
+
 export function activateUriHandlers(ballerinaExtInstance: BallerinaExtension) {
     window.registerUriHandler({
         handleUri(uri: Uri): ProviderResult<void> {
@@ -52,6 +69,12 @@ export function activateUriHandlers(ballerinaExtInstance: BallerinaExtension) {
                     // Legacy OAuth callback route - no longer used
                     // Authentication is now handled via Devant platform extension
                     console.log("Legacy /signin route called - authentication now uses Devant platform extension");
+                    break;
+                case '/oauth-callback':
+                    const code = urlParams.get('code');
+                    if (code && pendingOAuthResolve) {
+                        pendingOAuthResolve(code);
+                    }
                     break;
                 case '/open':
                     const org = urlParams.get("org");

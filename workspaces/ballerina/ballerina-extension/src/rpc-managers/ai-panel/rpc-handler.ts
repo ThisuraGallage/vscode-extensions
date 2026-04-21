@@ -34,6 +34,8 @@ import {
     ConnectorSpecCancelRequest,
     ConnectorSpecRequest,
     ConfigurationCancelRequest,
+    TriggerOAuthAutoConfigRequest,
+    triggerOAuthAutoConfig,
     ConfigurationProvideRequest,
     createTestDirecoryIfNotExists,
     declineChanges,
@@ -137,4 +139,5 @@ export function registerAiPanelRpcHandlers(messenger: Messenger) {
     messenger.onRequest(updateChatMessage, (args: UpdateChatMessageRequest) => rpcManger.updateChatMessage(args));
     messenger.onRequest(getActiveTempDir, () => rpcManger.getActiveTempDir());
     messenger.onRequest(getUsage, () => rpcManger.getUsage());
+    messenger.onRequest(triggerOAuthAutoConfig, (args: TriggerOAuthAutoConfigRequest) => rpcManger.triggerOAuthAutoConfig(args));
 }

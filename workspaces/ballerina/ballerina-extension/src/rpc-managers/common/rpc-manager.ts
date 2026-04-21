@@ -20,6 +20,7 @@
 import {
     BallerinaDiagnosticsRequest,
     BallerinaDiagnosticsResponse,
+    BINodeTemplateResponse,
     CommandResponse,
     CommandsRequest,
     CommandsResponse,
@@ -30,7 +31,10 @@ import {
     DiagnosticData,
     FileOrDirRequest,
     FileOrDirResponse,
+    FlowNode,
     GoToSourceRequest,
+    OAuthAutoConfigRequest,
+    OAuthAutoConfigResponse,
     OpenExternalUrlRequest,
     PackageTomlValues,
     PublishToCentralResponse,
@@ -41,6 +45,7 @@ import {
     ShowErrorMessageRequest,
     SyntaxTree,
     TypeResponse,
+    UpdateConfigVariableResponseV2,
     WorkspaceFileRequest,
     WorkspaceRootResponse,
     WorkspacesFileResponse,
@@ -49,12 +54,13 @@ import {
     ShowInfoModalRequest,
     ShowQuickPickRequest,
 } from "@wso2/ballerina-core";
+import axios from "axios";
 import child_process from 'child_process';
 import path from "path";
 import os from "os";
 import fs from "fs";
 import * as unzipper from 'unzipper';
-import { commands, env, MarkdownString, ProgressLocation, QuickPickItem, Uri, window, workspace } from "vscode";
+import { commands, env, MarkdownString, Position, ProgressLocation, QuickPickItem, Range, Uri, window, workspace, WorkspaceEdit } from "vscode";
 import { URI } from "vscode-uri";
 import { parse } from "@iarna/toml";
 import { extension } from "../../BalExtensionContext";
@@ -82,6 +88,9 @@ import {
     selectSampleDownloadPath
 } from "./utils";
 import { VisualizerWebview } from "../../views/visualizer/webview";
+import { writeBallerinaFileDidOpen } from "../../utils/modification";
+import { applyBallerinaTomlEdit } from "../bi-diagram/utils";
+import { waitForOAuthCallback } from "../../utils/uri-handlers";
 
 export class CommonRpcManager implements CommonRPCAPI {
     async getTypeCompletions(): Promise<TypeResponse> {
@@ -728,6 +737,174 @@ export class CommonRpcManager implements CommonRPCAPI {
             window.showInformationMessage('Project published to ballerina central successfully');
         } else {
             window.showErrorMessage(result.message || 'Failed to publish project to Ballerina Central');
+        }
+    }
+
+    async oauthAutoConfig(params: OAuthAutoConfigRequest): Promise<OAuthAutoConfigResponse> {
+        const PROXY_BASE_URL = "http://localhost:3000";
+        const CONNECTOR_ID = "358EAEE3-00BE-4932-A362-DBEAA36DE4E0";
+        const REFRESH_URL = "http://localhost:3000/api/oauth/token";
+        const OAUTH_CALLBACK_TIMEOUT_MS = 3 * 60 * 1_000;
+
+        try {
+            // 1. Build the initiate URL with redirect back to VS Code
+            const redirectUri = `${env.uriScheme}://wso2.ballerina/oauth-callback`;
+            const initiateUrl = `${PROXY_BASE_URL}/api/oauth/initiate?connectorId=${CONNECTOR_ID}&redirect_uri=${encodeURIComponent(redirectUri)}`;
+
+            // 2. Open browser and wait for the redirect callback
+            env.openExternal(Uri.parse(initiateUrl));
+            const code = await waitForOAuthCallback(OAUTH_CALLBACK_TIMEOUT_MS);
+
+            if (!code) {
+                return { success: false, error: "Timed out waiting for OAuth flow to complete. Please try again." };
+            }
+
+            // 3. Exchange the one-time code for credentials
+            const { data: credentials } = await axios.post<
+                { type: "oauth_refresh"; clientId: string; clientSecret: string; refreshToken: string }
+                | { type: "access_token"; accessToken: string }
+            >(
+                `${PROXY_BASE_URL}/api/oauth/token/exchange`,
+                { code },
+                { timeout: 10_000 }
+            );
+
+            // Only handle oauth_refresh credentials for now
+            if (credentials.type !== "oauth_refresh") {
+                return { success: true };
+            }
+
+            // 4. Declare configurable variables in config.bal and populate Config.toml
+            const projectPath = StateMachine.context().projectPath;
+            const configFilePath = path.join(projectPath, "config.bal");
+            const tomlValues = await getProjectTomlValues(projectPath);
+            const org = tomlValues?.package?.org ?? "";
+            const name = tomlValues?.package?.name ?? "";
+            const packageName = `${org}/${name}`;
+            const moduleName = "";
+
+            // Collect all existing configurable variable names across the project.
+            // The actual LS response is { [category: string]: { [module: string]: ConfigVariable[] } }
+            const existingVarsResponse = await StateMachine.langClient().getConfigVariablesV2({
+                projectPath,
+                includeLibraries: false,
+            }) as unknown as Record<string, Record<string, { properties?: { variable?: { value?: unknown } } }[]>>;
+
+            const existingNames = new Set<string>();
+            if (existingVarsResponse && typeof existingVarsResponse === "object") {
+                for (const moduleMap of Object.values(existingVarsResponse)) {
+                    if (moduleMap && typeof moduleMap === "object") {
+                        for (const variables of Object.values(moduleMap)) {
+                            if (Array.isArray(variables)) {
+                                for (const v of variables) {
+                                    const name = v.properties?.variable?.value;
+                                    if (name) { existingNames.add(String(name)); }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Generate unique variable names: xyzConfigClientId, xyzConfig2ClientId, etc.
+            const base = "xyzConfig";
+            const suffixes = ["ClientId", "ClientSecret", "RefreshToken", "RefreshUrl"];
+            // Find the lowest number N where none of xyzConfigN{Suffix} exist
+            let uniqueBase = base;
+            const allSuffixesFree = (b: string) => suffixes.every(s => !existingNames.has(`${b}${s}`));
+            if (!allSuffixesFree(base)) {
+                let i = 2;
+                while (!allSuffixesFree(`${base}${i}`)) { i++; }
+                uniqueBase = `${base}${i}`;
+            }
+
+            const clientIdVar = `${uniqueBase}ClientId`;
+            const clientSecretVar = `${uniqueBase}ClientSecret`;
+            const refreshTokenVar = `${uniqueBase}RefreshToken`;
+            const refreshUrlVar = `${uniqueBase}RefreshUrl`;
+
+            // Get the FlowNode template for a configurable variable
+            const templateResponse = await StateMachine.langClient()
+                .getConfigVariableNodeTemplate({ isNew: true }) as BINodeTemplateResponse;
+            const template = templateResponse.flowNode;
+
+            // Helper: apply text edits returned by the LS directly, bypassing updateSourceCode
+            // to avoid state machine transitions that would close the connection creation panel
+            const applyTextEdits = async (textEdits: Record<string, any[]>) => {
+                const workspaceEdit = new WorkspaceEdit();
+                for (const [key, edits] of Object.entries(textEdits)) {
+                    if (!edits || edits.length === 0) { continue; }
+                    const fileUri = key.startsWith("file:") ? Uri.parse(key) : Uri.file(key);
+                    if (!fs.existsSync(fileUri.fsPath)) {
+                        fs.writeFileSync(fileUri.fsPath, "");
+                    }
+                    if (fileUri.fsPath.endsWith(".toml")) {
+                        for (const edit of edits) {
+                            await applyBallerinaTomlEdit(fileUri, edit);
+                        }
+                        continue;
+                    }
+                    for (const edit of edits) {
+                        workspaceEdit.replace(
+                            fileUri,
+                            new Range(
+                                new Position(edit.range.start.line, edit.range.start.character),
+                                new Position(edit.range.end.line, edit.range.end.character)
+                            ),
+                            edit.newText
+                        );
+                    }
+                }
+                await workspace.applyEdit(workspaceEdit);
+            };
+
+            // Ensure config.bal exists AND is registered with the LS (didOpen)
+            const existingContent = fs.existsSync(configFilePath)
+                ? fs.readFileSync(configFilePath, "utf-8")
+                : "\n";
+            await writeBallerinaFileDidOpen(configFilePath, existingContent);
+
+            // Create all 4 configurable variables sequentially, with values for Config.toml
+            const varsToCreate = [
+                { name: clientIdVar, type: "string", configValue: credentials.clientId },
+                { name: clientSecretVar, type: "string", configValue: credentials.clientSecret },
+                { name: refreshTokenVar, type: "string", configValue: credentials.refreshToken },
+                { name: refreshUrlVar, type: "string", configValue: REFRESH_URL },
+            ];
+
+            for (const varDef of varsToCreate) {
+                const node: FlowNode = {
+                    ...template,
+                    properties: {
+                        ...template.properties,
+                        variable: { ...template.properties.variable, value: varDef.name, modified: true },
+                        type: { ...template.properties.type, value: varDef.type, modified: true },
+                        defaultValue: { ...template.properties.defaultValue, modified: true },
+                        configValue: { ...template.properties.configValue, value: `"${varDef.configValue}"`, modified: true },
+                    },
+                };
+
+                const response = await StateMachine.langClient().updateConfigVariablesV2({
+                    configFilePath,
+                    configVariable: node,
+                    packageName,
+                    moduleName,
+                }) as UpdateConfigVariableResponseV2;
+
+                if (response.textEdits) {
+                    await applyTextEdits(response.textEdits);
+                }
+            }
+
+            return {
+                success: true,
+                clientIdVar,
+                clientSecretVar,
+                refreshTokenVar,
+                refreshUrlVar,
+            };
+        } catch (err) {
+            return { success: false, error: (err as Error).message };
         }
     }
 

@@ -155,3 +155,16 @@ export interface PublishToCentralResponse {
     success: boolean;
     message?: string;
 }
+
+export interface OAuthAutoConfigRequest {
+    connectorName: string;
+}
+
+export interface OAuthAutoConfigResponse {
+    success: boolean;
+    clientIdVar?: string;
+    clientSecretVar?: string;
+    refreshTokenVar?: string;
+    refreshUrlVar?: string;
+    error?: string;
+}

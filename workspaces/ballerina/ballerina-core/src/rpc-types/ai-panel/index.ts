@@ -41,6 +41,8 @@ import {
     ConnectorSpecCancelRequest,
     ConfigurationProvideRequest,
     ConfigurationCancelRequest,
+    TriggerOAuthAutoConfigRequest,
+    TriggerOAuthAutoConfigResponse,
     UIChatMessage,
     CheckpointInfo,
     AbortAIGenerationRequest,
@@ -98,6 +100,7 @@ export interface AIPanelAPI {
     cancelConnectorSpec: (params: ConnectorSpecCancelRequest) => Promise<void>;
     provideConfiguration: (params: ConfigurationProvideRequest) => Promise<void>;
     cancelConfiguration: (params: ConfigurationCancelRequest) => Promise<void>;
+    triggerOAuthAutoConfig: (params: TriggerOAuthAutoConfigRequest) => Promise<TriggerOAuthAutoConfigResponse>;
     // ==================================
     // Chat State Management
     // ==================================

@@ -44,6 +44,8 @@ import {
     goToSource,
     hasCentralPATConfigured,
     isNPSupported,
+    OAuthAutoConfigRequest,
+    oauthAutoConfig,
     openExternalUrl,
     publishToCentral,
     runBackgroundTerminalCommand,
@@ -84,4 +86,5 @@ export function registerCommonRpcHandlers(messenger: Messenger) {
     messenger.onRequest(getDefaultOrgName, () => rpcManger.getDefaultOrgName());
     messenger.onRequest(publishToCentral, () => rpcManger.publishToCentral());
     messenger.onRequest(hasCentralPATConfigured, () => rpcManger.hasCentralPATConfigured());
+    messenger.onRequest(oauthAutoConfig, (args: OAuthAutoConfigRequest) => rpcManger.oauthAutoConfig(args));
 }

@@ -39,7 +39,9 @@ import {
     SampleDownloadRequest,
     ShowQuickPickRequest,
     DefaultOrgNameResponse,
-    PublishToCentralResponse
+    PublishToCentralResponse,
+    OAuthAutoConfigRequest,
+    OAuthAutoConfigResponse
 } from "./interfaces";
 
 export interface CommonRPCAPI {
@@ -67,4 +69,5 @@ export interface CommonRPCAPI {
     getDefaultOrgName: () => Promise<DefaultOrgNameResponse>;
     publishToCentral: () => Promise<PublishToCentralResponse>;
     hasCentralPATConfigured: () => Promise<boolean>;
+    oauthAutoConfig: (params: OAuthAutoConfigRequest) => Promise<OAuthAutoConfigResponse>;
 }

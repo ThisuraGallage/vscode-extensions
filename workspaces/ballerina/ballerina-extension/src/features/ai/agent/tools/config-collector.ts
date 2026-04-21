@@ -43,13 +43,40 @@ const ConfigVariableSchema = z.object({
     secret: z.boolean().optional().describe("Mark as true for sensitive values (API keys, passwords, tokens) to render as a masked input"),
 });
 
+const OAuthVariableSchema = z.object({
+    name: z.string().describe("Variable name in camelCase — must match the Ballerina configurable identifier exactly"),
+    credentialField: z.enum(["clientId", "clientSecret", "refreshToken"]).describe("Which credential field from the OAuth proxy this variable maps to"),
+    description: z.string().describe("Human-readable description"),
+    secret: z.boolean().optional().describe("Mark as true for sensitive values"),
+});
+
+const OAuthGroupSchema = z.object({
+    vendor: z.string().describe("The vendor name (e.g., 'gmail', 'gcalendar', 'salesforce')"),
+    variables: z.array(OAuthVariableSchema).describe("Variables that map to OAuth credentials for this vendor"),
+    refreshUrlVar: z.string().optional().describe("Name of the configurable refreshUrl variable to override during auto-config"),
+});
+
 const ConfigCollectorSchema = z.object({
     mode: z.enum(["collect", "check"]).describe("Operation mode"),
     filePath: z.string().optional().describe("Path to config file (for check mode)"),
     variables: z.array(ConfigVariableSchema).optional().describe("Configuration variables"),
     variableNames: z.array(z.string()).optional().describe("Variable names for check mode"),
     isTestConfig: z.boolean().optional().describe("Set to true when collecting configuration for tests. Tool will automatically read from Config.toml and write to tests/Config.toml"),
+    oauthGroups: z.array(OAuthGroupSchema).optional().describe("OAuth vendor groups with credential field mappings. Each group is shown as a separate form with an Auto Configure button."),
 });
+
+interface OAuthVariable {
+    name: string;
+    credentialField: "clientId" | "clientSecret" | "refreshToken";
+    description: string;
+    secret?: boolean;
+}
+
+interface OAuthGroup {
+    vendor: string;
+    variables: OAuthVariable[];
+    refreshUrlVar?: string;
+}
 
 interface ConfigCollectorInput {
     mode: "collect" | "check";
@@ -57,6 +84,7 @@ interface ConfigCollectorInput {
     variables?: ConfigVariable[];
     variableNames?: string[];
     isTestConfig?: boolean;
+    oauthGroups?: OAuthGroup[];
 }
 
 export interface ConfigCollectorResult {
@@ -125,6 +153,13 @@ Operation Modes:
    - When running tests, use isTestConfig: true — this is the only collect call needed; writes to tests/Config.toml after user confirms
    - Example: { mode: "collect", variables: [{ name: "stripeApiKey", description: "Stripe API key", secret: true }] }
    - Example (test): { mode: "collect", variables: [...], isTestConfig: true }
+
+   OAuth Auto-Configuration:
+   - For vendors that support OAuth (gmail, gcalendar, salesforce), use oauthGroups to enable auto-config
+   - Each oauthGroup is shown as a separate form with an "Auto Configure" button that handles OAuth login automatically
+   - The credentialField maps each variable to the corresponding credential from the OAuth proxy (clientId, clientSecret, refreshToken)
+   - OAuth groups are shown first (one per vendor), then remaining variables in a standard form
+   - Example: { mode: "collect", oauthGroups: [{ vendor: "gmail", variables: [{ name: "gmailClientId", credentialField: "clientId", description: "Gmail Client ID", secret: true }, { name: "gmailClientSecret", credentialField: "clientSecret", description: "Gmail Client Secret", secret: true }, { name: "gmailRefreshToken", credentialField: "refreshToken", description: "Gmail Refresh Token", secret: true }] }], variables: [{ name: "dbHost", description: "Database host" }] }
 
 2. CHECK: Inspect which values are filled or missing — can be called at any time
    - Returns status only, never actual values
@@ -205,15 +240,54 @@ export async function ConfigCollectorTool(
 
     try {
         switch (input.mode) {
-            case "collect":
+            case "collect": {
+                // Combine all variables into a single popup.
+                // OAuth group variables are merged with regular variables,
+                // and oauthGroups metadata is passed so the UI can render
+                // grouped sections with Auto Configure buttons.
+                const oauthGroups = input.oauthGroups || [];
+                const remainingVariables = input.variables || [];
+
+                // Convert OAuth group variables into ConfigVariable format
+                const oauthVariables: ConfigVariable[] = oauthGroups.flatMap((group) =>
+                    group.variables.map((v) => ({
+                        name: v.name,
+                        description: v.description,
+                        type: "string" as const,
+                        secret: v.secret ?? true,
+                    }))
+                );
+
+                const allVariables = [...oauthVariables, ...remainingVariables];
+
+                if (allVariables.length === 0) {
+                    return createErrorResult("INVALID_INPUT", "No variables or oauthGroups provided for collect mode");
+                }
+
+                // Build oauthGroups metadata for the UI (if any)
+                const oauthGroupsMeta: OAuthGroupMeta[] | undefined = oauthGroups.length > 0
+                    ? oauthGroups.map((g) => ({
+                        vendor: g.vendor,
+                        variables: g.variables.map((v) => ({
+                            name: v.name,
+                            credentialField: v.credentialField,
+                            description: v.description,
+                            secret: v.secret,
+                        })),
+                        refreshUrlVar: g.refreshUrlVar,
+                    }))
+                    : undefined;
+
                 return await handleCollectMode(
-                    input.variables,
+                    allVariables,
                     paths,
                     eventHandler,
                     requestId,
                     input.isTestConfig,
-                    modifiedFiles
+                    modifiedFiles,
+                    oauthGroupsMeta
                 );
+            }
 
             case "check":
                 return await handleCheckMode(
@@ -232,13 +306,25 @@ export async function ConfigCollectorTool(
     }
 }
 
+interface OAuthGroupMeta {
+    vendor: string;
+    variables: Array<{
+        name: string;
+        credentialField: "clientId" | "clientSecret" | "refreshToken";
+        description: string;
+        secret?: boolean;
+    }>;
+    refreshUrlVar?: string;
+}
+
 async function handleCollectMode(
     variables: ConfigVariable[],
     paths: ConfigCollectorPaths,
     eventHandler: CopilotEventHandler,
     requestId: string,
     isTestConfig?: boolean,
-    modifiedFiles?: string[]
+    modifiedFiles?: string[],
+    oauthGroups?: OAuthGroupMeta[]
 ): Promise<ConfigCollectorResult> {
     // Validate variable names
     const validationError = validateConfigVariables(variables);
@@ -268,13 +354,15 @@ async function handleCollectMode(
     console.log(`[ConfigCollector] ${isTestConfig ? 'Test' : 'Main'} configuration: ${analysis.filledCount} filled`);
 
     // Determine the message to show to user
-    const userMessage = isTestConfig
-        ? (analysis.hasActualValues
-            ? "Found values from main config. You can reuse or update them for testing."
-            : "Test configuration values needed")
-        : (analysis.hasActualValues
-            ? "Update configuration values"
-            : "Configuration values needed");
+    const userMessage = oauthGroups?.length
+        ? `Configure ${oauthGroups.map(g => g.vendor).join(", ")} credentials`
+        : isTestConfig
+            ? (analysis.hasActualValues
+                ? "Found values from main config. You can reuse or update them for testing."
+                : "Test configuration values needed")
+            : (analysis.hasActualValues
+                ? "Update configuration values"
+                : "Configuration values needed");
 
     // Request configuration values from user via ApprovalManager
     // This returns ACTUAL values (not exposed to agent)
@@ -284,7 +372,8 @@ async function handleCollectMode(
         existingValues,
         eventHandler,
         isTestConfig,
-        userMessage
+        userMessage,
+        oauthGroups
     );
 
     if (!userResponse.provided) {

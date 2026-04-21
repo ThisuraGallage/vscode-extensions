@@ -16,7 +16,7 @@
  * under the License.
  */
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import styled from "@emotion/styled";
 import { Button, Codicon, ThemeColors } from "@wso2/ui-toolkit";
 import { useRpcContext } from "@wso2/ballerina-rpc-client";
@@ -112,6 +112,53 @@ const FieldError = styled.div`
 
 const ActionButton = styled(Button)``;
 
+const AutoConfigSection = styled.div`
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    padding: 16px;
+    border: 1px dashed ${ThemeColors.OUTLINE_VARIANT};
+    border-radius: 8px;
+    background-color: ${ThemeColors.SURFACE_DIM};
+`;
+
+const AutoConfigMessage = styled.span`
+    font-size: 13px;
+    color: ${ThemeColors.ON_SURFACE_VARIANT};
+    text-align: center;
+`;
+
+const AutoConfigError = styled.div`
+    font-size: 12px;
+    color: ${ThemeColors.ERROR};
+    text-align: center;
+`;
+
+const Divider = styled.div`
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    color: ${ThemeColors.ON_SURFACE_VARIANT};
+    font-size: 12px;
+
+    &::before,
+    &::after {
+        content: "";
+        flex: 1;
+        border-bottom: 1px solid ${ThemeColors.OUTLINE_VARIANT};
+    }
+`;
+
+const GroupHeader = styled.div`
+    font-size: 13px;
+    font-weight: 600;
+    color: ${ThemeColors.ON_SURFACE};
+    text-transform: capitalize;
+    padding-top: 8px;
+`;
+
 const LoadingContainer = styled.div`
     display: flex;
     align-items: center;
@@ -131,6 +178,8 @@ export const ConfigurationCollector: React.FC<ConfigurationCollectorProps> = ({ 
     const [errors, setErrors] = useState<Record<string, string>>({});
     const [isProcessing, setIsProcessing] = useState(false);
     const [visibleFields, setVisibleFields] = useState<Record<string, boolean>>({});
+    // Per-vendor auto-config state: tracks which vendor is currently authenticating and any errors
+    const [autoConfigState, setAutoConfigState] = useState<Record<string, { loading: boolean; error?: string }>>({});
 
     const toggleVisibility = (name: string) => {
         setVisibleFields((prev) => ({ ...prev, [name]: !prev[name] }));
@@ -142,7 +191,96 @@ export const ConfigurationCollector: React.FC<ConfigurationCollectorProps> = ({ 
             setConfigValues(data.existingValues);
         }
         setVisibleFields({});
+        setAutoConfigState({});
     }, [data]);
+
+    const handleAutoConfig = useCallback(async (vendor: string) => {
+        const group = data?.oauthGroups?.find((g) => g.vendor === vendor);
+        if (!group) return;
+
+        setAutoConfigState((prev) => ({ ...prev, [vendor]: { loading: true } }));
+
+        try {
+            const response = await rpcClient.getAiPanelRpcClient().triggerOAuthAutoConfig({ vendor });
+
+            if (response.success && response.credentials) {
+                // Auto-fill form fields using the credentialField mapping
+                const newValues = { ...configValues };
+                for (const variable of group.variables) {
+                    const value = response.credentials[variable.credentialField];
+                    if (value) {
+                        newValues[variable.name] = value;
+                    }
+                }
+                // Override refreshUrl with proxy token endpoint when auto-config is used
+                if (group.refreshUrlVar) {
+                    newValues[group.refreshUrlVar] = "http://localhost:3000/api/oauth/token";
+                }
+                setConfigValues(newValues);
+                // Clear errors for auto-filled fields
+                setErrors((prev) => {
+                    const newErrors = { ...prev };
+                    for (const variable of group.variables) {
+                        delete newErrors[variable.name];
+                    }
+                    if (group.refreshUrlVar) {
+                        delete newErrors[group.refreshUrlVar];
+                    }
+                    return newErrors;
+                });
+                setAutoConfigState((prev) => ({ ...prev, [vendor]: { loading: false } }));
+            } else {
+                setAutoConfigState((prev) => ({
+                    ...prev,
+                    [vendor]: { loading: false, error: response.error || "Auto-configuration failed." },
+                }));
+            }
+        } catch (error: any) {
+            setAutoConfigState((prev) => ({
+                ...prev,
+                [vendor]: { loading: false, error: error.message || "Auto-configuration failed." },
+            }));
+        }
+    }, [data, rpcClient, configValues]);
+
+    const renderField = (variable: { name: string; description?: string; type?: string; secret?: boolean }) => {
+        const isSecret = variable.secret === true;
+        const isVisible = visibleFields[variable.name];
+        const inputType = isSecret
+            ? (isVisible ? "text" : "password")
+            : (variable.type === "int" ? "number" : "text");
+        return (
+            <ConfigurationField key={variable.name}>
+                <FieldLabel>
+                    {variable.name}
+                    {variable.description && (
+                        <FieldDescription>- {variable.description}</FieldDescription>
+                    )}
+                </FieldLabel>
+                <FieldInputWrapper>
+                    <FieldInput
+                        type={inputType}
+                        placeholder={variable.type === "int" ? "Enter number" : "Enter value"}
+                        value={configValues[variable.name] || ""}
+                        onChange={(e) => handleInputChange(variable.name, e.target.value)}
+                        onKeyDown={handleKeyDown}
+                        hasError={!!errors[variable.name]}
+                        hasToggle={isSecret}
+                    />
+                    {isSecret && (
+                        <ToggleVisibilityButton
+                            type="button"
+                            onClick={() => toggleVisibility(variable.name)}
+                            title={isVisible ? "Hide value" : "Show value"}
+                        >
+                            <Codicon name={isVisible ? "eye-closed" : "eye"} />
+                        </ToggleVisibilityButton>
+                    )}
+                </FieldInputWrapper>
+                {errors[variable.name] && <FieldError>{errors[variable.name]}</FieldError>}
+            </ConfigurationField>
+        );
+    };
 
     const handleInputChange = (variableName: string, value: string) => {
         setConfigValues((prev) => ({ ...prev, [variableName]: value }));
@@ -269,44 +407,52 @@ export const ConfigurationCollector: React.FC<ConfigurationCollectorProps> = ({ 
                 </PopupHeader>
                 <PopupContent>
                     <FormSection>
-                        {data.variables?.map((variable) => {
-                            const isSecret = variable.secret === true;
-                            const isVisible = visibleFields[variable.name];
-                            const inputType = isSecret
-                                ? (isVisible ? "text" : "password")
-                                : (variable.type === "int" ? "number" : "text");
+                        {data.oauthGroups?.map((group) => {
+                            const vendorState = autoConfigState[group.vendor] || { loading: false };
+                            const anyAutoConfigLoading = Object.values(autoConfigState).some((s) => s.loading);
+                            // Collect variable names that belong to this OAuth group
+                            const groupVarNames = new Set(group.variables.map((v) => v.name));
+
                             return (
-                                <ConfigurationField key={variable.name}>
-                                    <FieldLabel>
-                                        {variable.name}
-                                        {variable.description && (
-                                            <FieldDescription>- {variable.description}</FieldDescription>
+                                <React.Fragment key={group.vendor}>
+                                    <GroupHeader>{group.vendor}</GroupHeader>
+                                    <AutoConfigSection>
+                                        <Codicon name="key" />
+                                        <AutoConfigMessage>
+                                            Automatically configure {group.vendor} credentials by signing in
+                                        </AutoConfigMessage>
+                                        <Button
+                                            appearance="primary"
+                                            onClick={() => handleAutoConfig(group.vendor)}
+                                            disabled={anyAutoConfigLoading || isProcessing}
+                                        >
+                                            {vendorState.loading ? "Signing in..." : `Auto Configure ${group.vendor}`}
+                                        </Button>
+                                        {vendorState.error && (
+                                            <AutoConfigError>{vendorState.error}</AutoConfigError>
                                         )}
-                                    </FieldLabel>
-                                    <FieldInputWrapper>
-                                        <FieldInput
-                                            type={inputType}
-                                            placeholder={variable.type === "int" ? "Enter number" : "Enter value"}
-                                            value={configValues[variable.name] || ""}
-                                            onChange={(e) => handleInputChange(variable.name, e.target.value)}
-                                            onKeyDown={handleKeyDown}
-                                            hasError={!!errors[variable.name]}
-                                            hasToggle={isSecret}
-                                        />
-                                        {isSecret && (
-                                            <ToggleVisibilityButton
-                                                type="button"
-                                                onClick={() => toggleVisibility(variable.name)}
-                                                title={isVisible ? "Hide value" : "Show value"}
-                                            >
-                                                <Codicon name={isVisible ? "eye-closed" : "eye"} />
-                                            </ToggleVisibilityButton>
-                                        )}
-                                    </FieldInputWrapper>
-                                    {errors[variable.name] && <FieldError>{errors[variable.name]}</FieldError>}
-                                </ConfigurationField>
+                                    </AutoConfigSection>
+                                    <Divider>or enter manually</Divider>
+                                    {data.variables
+                                        ?.filter((v) => groupVarNames.has(v.name))
+                                        .map((variable) => renderField(variable))}
+                                </React.Fragment>
                             );
                         })}
+                        {(() => {
+                            // Render remaining variables that are NOT part of any OAuth group
+                            const oauthVarNames = new Set(
+                                (data.oauthGroups || []).flatMap((g) => g.variables.map((v) => v.name))
+                            );
+                            const remainingVars = data.variables?.filter((v) => !oauthVarNames.has(v.name)) || [];
+                            if (remainingVars.length === 0) return null;
+                            return (
+                                <>
+                                    {data.oauthGroups?.length > 0 && <Divider>Other Configuration</Divider>}
+                                    {remainingVars.map((variable) => renderField(variable))}
+                                </>
+                            );
+                        })()}
                     </FormSection>
                 </PopupContent>
                 <PopupFooter>

@@ -19,7 +19,8 @@ import React, { useRef, useState, useEffect } from "react";
 
 import { VSCodeCheckbox } from "@vscode/webview-ui-toolkit/react";
 import { TypeField } from "@wso2/ballerina-core";
-import { Codicon, Dropdown, Tooltip, Typography } from "@wso2/ui-toolkit";
+import { Button, Codicon, Dropdown, Tooltip, Typography } from "@wso2/ui-toolkit";
+import { useRpcContext } from "@wso2/ballerina-rpc-client";
 
 import { TypeProps } from "../../ParameterBranch";
 import { useHelperPaneStyles } from "../../styles";
@@ -29,6 +30,9 @@ import { getSelectedUnionMember, isRequiredParam, updateFieldsSelection, resetFi
 export default function UnionType(props: TypeProps) {
     const { param, depth, onChange } = props;
     const helperStyleClass = useHelperPaneStyles();
+    const { rpcClient } = useRpcContext();
+    const [isAutoConfiguring, setIsAutoConfiguring] = useState(false);
+    const [autoConfigError, setAutoConfigError] = useState<string | undefined>();
 
     const requiredParam = isRequiredParam(param) && depth > 1; // Only apply required param logic after depth 1
     if (requiredParam) {
@@ -258,6 +262,52 @@ export default function UnionType(props: TypeProps) {
                 </div>
                 {paramSelected && parameter && (
                     <div className={helperStyleClass.listItemBody}>
+                        {selectedMemberType === "OAuth2RefreshTokenGrantConfig" && (
+                            <div>
+                                <Button
+                                    appearance="secondary"
+                                    disabled={isAutoConfiguring}
+                                    onClick={async () => {
+                                        setIsAutoConfiguring(true);
+                                        setAutoConfigError(undefined);
+                                        try {
+                                            const connectorName = parameter.typeInfo?.moduleName ?? "oauth";
+                                            const result = await rpcClient.getCommonRpcClient().oauthAutoConfig({ connectorName });
+                                            if (!result.success) {
+                                                throw new Error(result.error || "OAuth auto config failed.");
+                                            }
+                                            const fieldValues: Record<string, string> = {
+                                                clientId: result.clientIdVar,
+                                                clientSecret: result.clientSecretVar,
+                                                refreshToken: result.refreshTokenVar,
+                                                refreshUrl: result.refreshUrlVar,
+                                            };
+                                            parameter.fields?.forEach((field) => {
+                                                if (field.name && fieldValues[field.name] !== undefined) {
+                                                    field.value = fieldValues[field.name];
+                                                    field.selected = true;
+                                                }
+                                            });
+                                            onChange();
+                                        } catch (err) {
+                                            setAutoConfigError((err as Error).message);
+                                        } finally {
+                                            setIsAutoConfiguring(false);
+                                        }
+                                    }}
+                                >
+                                    {isAutoConfiguring
+                                        ? "Waiting for login..."
+                                        : `Auto Config${parameter.typeInfo?.moduleName ? ` ${parameter.typeInfo.moduleName.charAt(0).toUpperCase()}${parameter.typeInfo.moduleName.slice(1)}` : ""}`
+                                    }
+                                </Button>
+                                {autoConfigError && (
+                                    <Typography variant="body3" sx={{ color: "var(--vscode-errorForeground)", marginTop: "4px" }}>
+                                        {autoConfigError}
+                                    </Typography>
+                                )}
+                            </div>
+                        )}
                         <ParameterBranch parameters={[parameter]} depth={depth + 1} onChange={onChange} />
                     </div>
                 )}

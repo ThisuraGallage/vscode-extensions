@@ -21,8 +21,14 @@ import { TASK_WRITE_TOOL_NAME } from "./tools/task-writer";
 import { FILE_BATCH_EDIT_TOOL_NAME, FILE_SINGLE_EDIT_TOOL_NAME, FILE_WRITE_TOOL_NAME } from "./tools/text-editor";
 import { CONNECTOR_GENERATOR_TOOL } from "./tools/connector-generator";
 import { CONFIG_COLLECTOR_TOOL } from "./tools/config-collector";
+// import { TOKEN_PROXY_TOOL } from "./tools/token-proxy";
 import { TEST_RUNNER_TOOL_NAME } from "./tools/test-runner";
 import { getLanglibInstructions } from "../utils/libs/langlibs";
+
+/**
+ * Vendors that support OAuth auto-configuration via the token proxy.
+ */
+const OAUTH_AUTO_CONFIG_VENDORS = ["gmail", "gcalendar", "salesforce"];
 import { formatCodebaseStructure, formatCodeContext } from "./utils";
 import { GenerateAgentCodeRequest, OperationType, ProjectSource } from "@wso2/ballerina-core";
 import { getRequirementAnalysisCodeGenPrefix, getRequirementAnalysisTestGenPrefix } from "./np/prompts";
@@ -159,6 +165,15 @@ ${getLanglibInstructions()}
 - Initialize any necessary clients with the correct configuration based on the retrieved libraries at the module level (before any function or service declarations).
 - Implement the main function OR service to address the query requirements.
 
+### OAuth Configurable refreshUrl
+For supported OAuth auto-config vendors (${OAUTH_AUTO_CONFIG_VENDORS.join(", ")}), when using an auth flow that includes a refreshUrl (e.g., OAuth2RefreshTokenGrantConfig):
+- Always declare a configurable string variable for refreshUrl and use it in the auth configuration.
+- If the library's type definition includes a default value for refreshUrl, use that as the default value for the configurable variable.
+- If no default value is available, declare the configurable without a default value.
+- Example with default: \`configurable string refreshUrl = "https://accounts.google.com/o/oauth2/token";\`
+- Example without default: \`configurable string refreshUrl = ?;\`
+- Use the configurable in the OAuth2RefreshTokenGrantConfig: \`refreshUrl: refreshUrl\`
+
 ## Coding Rules
 - Use records as canonical representations of data structures. Always define records for data structures instead of using maps or json and navigate using the record fields.
 - Do not invoke methods on json access expressions. Always use separate statements.
@@ -193,6 +208,7 @@ ${getLanglibInstructions()}
 - You should only Run or write tests if the user explicitly asks to do so.
 - Providing values to configurables is a runtime task and should only do it before running or executing the tests.
 - For Config.toml configuration value management, use ${CONFIG_COLLECTOR_TOOL} to request for values. Check the different modes of the tool for various usecases.
+- For vendors that support OAuth (${OAUTH_AUTO_CONFIG_VENDORS.join(", ")}), use oauthGroups in ${CONFIG_COLLECTOR_TOOL} COLLECT mode. This shows an Auto Configure button that handles OAuth login automatically. Map each variable to its credentialField (clientId, clientSecret, refreshToken). If you declared a configurable refreshUrl variable for the vendor, pass its name as refreshUrlVar in the oauthGroup so that auto-config can override it with the proxy token endpoint. Non-OAuth variables go in the regular variables array.
 - Make sure to stop service once you are done using it.
 
 ## Test Runner

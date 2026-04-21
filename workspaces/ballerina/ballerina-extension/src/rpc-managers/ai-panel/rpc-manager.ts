@@ -41,12 +41,15 @@ import {
     SubmitFeedbackRequest,
     TestGenerationMentions,
     UIChatMessage,
+    TriggerOAuthAutoConfigRequest,
+    TriggerOAuthAutoConfigResponse,
     UpdateChatMessageRequest,
     UsageResponse
 } from "@wso2/ballerina-core";
+import axios from "axios";
 import * as fs from 'fs';
 import path from "path";
-import { workspace } from 'vscode';
+import { env, Uri, workspace } from 'vscode';
 
 import { isNumber } from "lodash";
 import { getServiceDeclarationNames } from "../../../src/features/ai/documentation/utils";
@@ -79,6 +82,7 @@ import { ContextTypesExecutor } from '../../features/ai/executors/datamapper/Con
 import { FunctionMappingExecutor } from '../../features/ai/executors/datamapper/FunctionMappingExecutor';
 import { InlineMappingExecutor } from '../../features/ai/executors/datamapper/InlineMappingExecutor';
 import { approvalManager } from '../../features/ai/state/ApprovalManager';
+import { waitForOAuthCallback } from '../../utils/uri-handlers';
 import { cleanupTempProject } from "../../features/ai/utils/project/temp-project";
 import { RPCLayer } from '../../RPCLayer';
 import { chatStateStorage } from '../../views/ai-panel/chatStateStorage';
@@ -716,6 +720,65 @@ export class AiPanelRpcManager implements AIPanelAPI {
         } catch (error) {
             console.error("Failed to fetch usage:", error);
             return undefined;
+        }
+    }
+
+    async triggerOAuthAutoConfig(params: TriggerOAuthAutoConfigRequest): Promise<TriggerOAuthAutoConfigResponse> {
+        const PROXY_BASE_URL = "http://localhost:3000";
+        const OAUTH_CALLBACK_TIMEOUT_MS = 3 * 60 * 1_000;
+
+        try {
+            // 1. Discover the connector id for this vendor
+            const { data: connectors } = await axios.get<Array<{ id: string; name: string; vendor: string }>>(
+                `${PROXY_BASE_URL}/api/connectors`,
+                { timeout: 10_000 }
+            );
+            const match = connectors.find(
+                (c) => c.vendor.toLowerCase() === params.vendor.toLowerCase()
+                    || c.name.toLowerCase() === params.vendor.toLowerCase()
+            );
+            if (!match) {
+                return {
+                    success: false,
+                    error: `No connector found for vendor '${params.vendor}'. Available: ${connectors.map((c) => c.name).join(", ")}.`,
+                };
+            }
+
+            // 2. Open browser with initiate URL (redirect-based flow)
+            const redirectUri = `${env.uriScheme}://wso2.ballerina/oauth-callback`;
+            const initiateUrl = `${PROXY_BASE_URL}/api/oauth/initiate?connectorId=${match.id}&redirect_uri=${encodeURIComponent(redirectUri)}`;
+            env.openExternal(Uri.parse(initiateUrl));
+
+            // 3. Wait for the redirect callback with one-time code
+            const code = await waitForOAuthCallback(OAUTH_CALLBACK_TIMEOUT_MS);
+            if (!code) {
+                return { success: false, error: "Timed out waiting for OAuth flow to complete. Please try again." };
+            }
+
+            // 4. Exchange the one-time code for credentials
+            const { data: credentials } = await axios.post<
+                | { type: "oauth_refresh"; clientId: string; clientSecret: string; refreshToken: string }
+                | { type: "access_token"; accessToken: string }
+            >(
+                `${PROXY_BASE_URL}/api/oauth/token/exchange`,
+                { code },
+                { timeout: 10_000 }
+            );
+
+            if (credentials.type !== "oauth_refresh") {
+                return { success: false, error: "This vendor uses access token credentials which are not yet supported for auto-config." };
+            }
+
+            return {
+                success: true,
+                credentials: {
+                    clientId: credentials.clientId,
+                    clientSecret: credentials.clientSecret,
+                    refreshToken: credentials.refreshToken,
+                },
+            };
+        } catch (err) {
+            return { success: false, error: (err as Error).message };
         }
     }
 }

@@ -170,6 +170,19 @@ export interface ArtifactData {
     identifier?: string;
 }
 
+export interface OAuthCredentialFieldMapping {
+    name: string;
+    credentialField: "clientId" | "clientSecret" | "refreshToken";
+    description: string;
+    secret?: boolean;
+}
+
+export interface OAuthGroupMetadata {
+    vendor: string;
+    variables: OAuthCredentialFieldMapping[];
+    refreshUrlVar?: string;
+}
+
 export interface ConfigurationCollectorMetadata {
     requestId: string;
     variables: Array<{
@@ -181,6 +194,7 @@ export interface ConfigurationCollectorMetadata {
     existingValues?: Record<string, string>;
     message: string;
     isTestConfig?: boolean;
+    oauthGroups?: OAuthGroupMetadata[];
 }
 
 export interface AgentMetadata {
